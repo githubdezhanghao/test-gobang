@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>联机特殊五子棋</title>
+    <style>
+        /* 优化后的样式 */
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            font-family: 'Arial', sans-serif;
+            background: #f0f0f0;
+        }
+        #room-management {
+            margin: 20px;
+            padding: 15px;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        #chessboard {
+            display: grid;
+            grid-template-rows: repeat(15, 30px);
+            grid-template-columns: repeat(15, 30px);
+            gap: 1px;
+            background: #c4a976;
+            padding: 10px;
+            box-shadow: 2px 2px 10px rgba(0,0,0,0.3);
+            margin: 20px;
+        }
+        .cell {
+            width: 34px;
+            height: 34px;
+            position: relative;
+            background: #deb887;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .cell:hover {
+            background: #d2b48c;
+        }
+        .piece {
+            position: absolute;
+            top: 5px;
+            left: 5px;
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            border: 2px solid rgba(0,0,0,0.2);
+            box-shadow: 1px 1px 3px rgba(0,0,0,0.2);
+        }
+        .black { background: #2c3e50; }
+        .white { background: #ecf0f1; }
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            justify-content: center;
+            align-items: center;
+        }
+        .modal-content {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            min-width: 300px;
+            text-align: center;
+        }
+        button {
+            padding: 8px 16px;
+            margin: 5px;
+            border: none;
+            border-radius: 5px;
+            background: #3498db;
+            color: white;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        button:hover {
+            background: #2980b9;
+        }
+        input {
+            padding: 8px;
+            margin: 5px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            width: 150px;
+        }
+    </style>
+</head>
+<body>
+    <div id="room-management">
+        <input type="text" id="room-id" placeholder="输入6位房间号">
+        <button onclick="createRoom()">创建新房间</button>
+        <button onclick="joinRoom()">加入房间</button>
+        <div id="room-status" style="margin-top:10px;color:#666;"></div>
+    </div>
+    
+    <div id="chessboard"></div>
+    
+    <div id="piece-selection-modal" class="modal">
+        <div class="modal-content">
+            <h3 style="margin:0 0 15px 0;">选择要使用的棋子</h3>
+            <div id="piece-buttons-container"></div>
+            <button onclick="closeModal()" style="margin-top:15px;background:#e74c3c">取消</button>
+        </div>
+    </div>
+
+    <!-- Firebase SDK -->
+    <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-database.js"></script>
+
+    <script>
+        // Firebase配置（已验证可用）
+        const firebaseConfig = {
+            apiKey: "AIzaSyA3eGw7xwe7_w9t-3UfKDM1jFmwFh0cPC8",
+            authDomain: "test-gobang-cdefa.firebaseapp.com",
+            databaseURL: "https://test-gobang-cdefa-default-rtdb.firebaseio.com",
+            projectId: "test-gobang-cdefa",
+            storageBucket: "test-gobang-cdefa.appspot.com",
+            messagingSenderId: "275315141754",
+            appId: "1:275315141754:web:984ae95e5da0e69da61fc3"
+        };
+        firebase.initializeApp(firebaseConfig);
+        const database = firebase.database();
+
+        // 游戏常量
+        const RANKS = ["军旗", "司令", "军长", "师长", "旅长", "团长", "营长", "连长", "排长", "工兵", "炸弹", "地雷"];
+        const INITIAL_PIECES = { 军旗:1, 司令:1, 军长:1, 师长:2, 旅长:2, 团长:2, 营长:2, 炸弹:2, 连长:3, 排长:3, 工兵:3, 地雷:3 };
+        const REPLENISH_PIECES = { 军长:1, 师长:1, 旅长:1, 团长:1, 营长:1, 炸弹:1, 连长:2, 排长:2, 工兵:2, 地雷:2 };
+
+        // 游戏状态
+        let roomId = null;
+        let playerColor = null;
+        let currentPlayer = "black";
+        let chessboard = Array.from({length:15}, () => Array(15).fill(null));
+        let remainingPieces = { black: {...INITIAL_PIECES}, white: {...INITIAL_PIECES} };
+
+        // 初始化棋盘
+        function initChessboard() {
+            const board = document.getElementById('chessboard');
+            board.innerHTML = '';
+            
+            for (let i = 0; i < 15; i++) {
+                for (let j = 0; j < 15; j++) {
+                    const cell = document.createElement('div');
+                    cell.className = 'cell';
+                    cell.onclick = () => handleCellClick(i, j);
+                    
+                    if (chessboard[i][j]) {
+                        const piece = document.createElement('div');
+                        piece.className = `piece ${chessboard[i][j].color}`;
+                        piece.title = chessboard[i][j].rank;
+                        cell.appendChild(piece);
+                    }
+                    
+                    board.appendChild(cell);
+                }
+            }
+        }
+
+        // 处理单元格点击
+        function handleCellClick(row, col) {
+            if (!roomId || playerColor !== currentPlayer) return;
+            
+            const target = chessboard[row][col];
+            if (target && target.color === playerColor) {
+                alert("不能攻击自己的棋子！");
+                return;
+            }
+            
+            showPieceSelection(row, col);
+        }
+
+        // 显示棋子选择菜单
+        function showPieceSelection(row, col) {
+            const modal = document.getElementById('piece-selection-modal');
+            modal.style.display = 'flex';
+            
+            const container = document.getElementById('piece-buttons-container');
+            container.innerHTML = '';
+            
+            RANKS.forEach(rank => {
+                if (remainingPieces[playerColor][rank] > 0) {
+                    const btn = document.createElement('button');
+                    btn.textContent = `${rank} (剩余${remainingPieces[playerColor][rank]})`;
+                    btn.onclick = () => confirmPlacement(rank, row, col);
+                    container.appendChild(btn);
+                }
+            });
+        }
+
+        // 确认放置棋子
+        function confirmPlacement(rank, row, col) {
+            database.ref(`rooms/${roomId}/game`).transaction(gameState => {
+                if (!gameState) return;
+                
+                const targetCell = gameState.chessboard[row][col];
+                if (targetCell && targetCell.color === playerColor) return; // 不能覆盖己方棋子
+                
+                // 执行攻击逻辑
+                if (targetCell) {
+                    const result = compareRanks(rank, targetCell.rank);
+                    if (result === 'lose') return; // 攻击失败
+                    if (result === 'draw') gameState.chessboard[row][col] = null;
+                }
+                
+                // 更新棋盘状态
+                gameState.chessboard[row][col] = { color: playerColor, rank: rank };
+                gameState.remainingPieces[playerColor][rank]--;
+                
+                // 检查胜利条件
+                if (checkWinCondition(row, col)) {
+                    alert(`${playerColor === 'black' ? '黑方' : '白方'}获胜！`);
+                }
+                
+                // 切换玩家
+                gameState.currentPlayer = playerColor === 'black' ? 'white' : 'black';
+                return gameState;
+            });
+            
+            closeModal();
+        }
+
+        // 比较棋子等级
+        function compareRanks(attacker, defender) {
+            const order = ['工兵','排长','连长','营长','团长','旅长','师长','军长','司令'];
+            if (attacker === '炸弹' || defender === '炸弹') return 'draw';
+            if (defender === '地雷') return attacker === '工兵' ? 'win' : 'lose';
+            if (defender === '军旗') return 'win';
+            return order.indexOf(attacker) > order.indexOf(defender) ? 'win' : 'lose';
+        }
+
+        // 检查胜利条件
+        function checkWinCondition(row, col) {
+            const piece = chessboard[row][col];
+            if (!piece || piece.rank === '军旗') return false;
+
+            // 五连检测
+            const directions = [[1,0],[0,1],[1,1],[1,-1]];
+            for (const [dx, dy] of directions) {
+                let count = 1;
+                for (let i = 1; i < 5; i++) {
+                    if (checkPiece(row + i*dx, col + i*dy, piece.color)) count++;
+                    if (checkPiece(row - i*dx, col - i*dy, piece.color)) count++;
+                }
+                if (count >= 5) return true;
+            }
+            return false;
+        }
+
+        function checkPiece(x, y, color) {
+            return x >=0 && x <15 && y >=0 && y <15 && chessboard[x][y]?.color === color;
+        }
+
+        // 房间管理
+        function createRoom() {
+            roomId = Math.random().toString(36).substr(2, 6).toUpperCase();
+            playerColor = 'black';
+            
+            database.ref(`rooms/${roomId}`).set({
+                game: {
+                    currentPlayer: 'black',
+                    chessboard: chessboard,
+                    remainingPieces: remainingPieces
+                },
+                players: { black: true }
+            });
+            
+            document.getElementById('room-status').innerHTML = `
+                房间已创建！房间号：<strong>${roomId}</strong><br>
+                等待其他玩家加入...
+            `;
+            startListening();
+        }
+
+        function joinRoom() {
+            roomId = document.getElementById('room-id').value.trim().toUpperCase();
+            if (!roomId || roomId.length !== 6) {
+                alert('请输入有效的6位房间号');
+                return;
+            }
+            
+            const roomRef = database.ref(`rooms/${roomId}`);
+            roomRef.once('value').then(snapshot => {
+                if (!snapshot.exists()) {
+                    alert('房间不存在！');
+                    return;
+                }
+                
+                if (snapshot.child('players/white').exists()) {
+                    alert('房间已满！');
+                    return;
+                }
+                
+                playerColor = 'white';
+                roomRef.child('players/white').set(true);
+                document.getElementById('room-status').innerHTML = `
+                    成功加入房间：<strong>${roomId}</strong><br>
+                    你执白棋，等待黑方先手...
+                `;
+                startListening();
+            });
+        }
+
+        // 实时监听游戏状态
+        function startListening() {
+            database.ref(`rooms/${roomId}/game`).on('value', snapshot => {
+                if (!snapshot.exists()) return;
+                
+                const gameState = snapshot.val();
+                chessboard = gameState.chessboard;
+                remainingPieces = gameState.remainingPieces;
+                currentPlayer = gameState.currentPlayer;
+                
+                initChessboard();
+                updateStatus();
+            });
+        }
+
+        // 更新状态显示
+        function updateStatus() {
+            const statusElement = document.getElementById('room-status');
+            let statusText = `房间号：${roomId} | 你的颜色：${playerColor}<br>`;
+            statusText += currentPlayer === playerColor 
+                ? '🎮 轮到你的回合！' 
+                : '⏳ 等待对方行动...';
+            statusElement.innerHTML = statusText;
+        }
+
+        // 关闭模态框
+        function closeModal() {
+            document.getElementById('piece-selection-modal').style.display = 'none';
+        }
+
+        // 初始化
+        initChessboard();
+    </script>
+</body>
+</html>
